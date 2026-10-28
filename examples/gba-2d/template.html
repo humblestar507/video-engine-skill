@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel console</title>
+<style>
+  :root { --bg: #1b1517; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: #b9a9ad; overflow: hidden;
+               font: 13px/1.4 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+  main { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+  canvas { max-width: 100vw; max-height: calc(100vh - 74px); width: auto; height: auto; aspect-ratio: 1110 / 1146;
+           image-rendering: pixelated; touch-action: none; user-select: none; -webkit-user-select: none; cursor: default; }
+  canvas.over { cursor: pointer; }
+  #hud { min-height: 38px; text-align: center; letter-spacing: .04em; }
+  #hud b { color: #e8d9dc; font-weight: 600; }
+  #keys { opacity: .6; font-size: 12px; }
+  #fallback { display: none; padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <canvas id="c" aria-label="Pixel console: press the buttons" tabindex="0"></canvas>
+  <div id="hud"><span id="act">press a button</span><br><span id="keys">arrows = D-pad &middot; Z = A &middot; X = B &middot; Enter = Start &middot; Space = Select &middot; P = Power &middot; O = Ball</span></div>
+  <div id="fallback">Loading failed (canvas or image decoding is unavailable).</div>
+</main>
+
+<script>
+/* Frame-exact replay of a 42-frame, 10 fps loop (4.2 s). Only the regions that change in the source animation are stored
+   as per-frame overlays; everything else is the static base image. Button masks and pressed sprites come from pixel analysis. */
+const A = __ASSETS__;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d', { willReadFrequently: true });
+cv.width = A.w; cv.height = A.h; ctx.imageSmoothingEnabled = false;
+const act = document.getElementById('act');
+const img = src => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = 'data:image/png;base64,' + src; });
+
+const FRAME_MS = 1000 / A.fps, N = A.frames;
+const S = { f: 0, acc: 0, dir: 1, paused: false, speed: 1, last: performance.now(), dirty: true, pressed: new Map() };
+let base, comps, buttons;
+
+/* what each control does to the playback (frame numbers are the measured start of each screen event) */
+const ACTIONS = {
+  a:        { label: 'A - restart the loop',                  run: () => jump(0) },
+  b:        { label: 'B - reverse direction',                 run: () => { S.dir *= -1; } },
+  start:    { label: 'Start - logo glitch',                   run: () => jump(10) },
+  select:   { label: 'Select - pause / resume',               run: () => { S.paused = !S.paused; } },
+  power:    { label: 'Power - speed 1x / 0.5x / 2x',          run: () => { S.speed = S.speed === 1 ? 0.5 : S.speed === 0.5 ? 2 : 1; } },
+  pokeball: { label: 'Ball - step one frame',                 run: () => { S.paused = true; step(S.dir); } },
+  nw:       { label: 'Up - light streak across the screen',   run: () => jump(18) },
+  ne:       { label: 'Right - blue pattern appears',          run: () => jump(2) },
+  sw:       { label: 'Left - blue pattern dissolves',         run: () => jump(21) },
+  se:       { label: 'Down - red glitch on the logo',         run: () => jump(31) },
+};
+function jump(f) { S.f = f; S.acc = 0; S.paused = false; S.dir = 1; S.dirty = true; }
+function step(d) { S.f = (S.f + d + N) % N; S.dirty = true; }
+
+function drawFrame() {
+  for (const c of comps) ctx.drawImage(base, c.x, c.y, c.w, c.h, c.x, c.y, c.w, c.h);          /* restore, then overlay: regions may overlap */
+  for (const c of comps) { const r = Math.floor(S.f / c.cols), k = S.f % c.cols; ctx.drawImage(c.img, k * c.w, r * c.h, c.w, c.h, c.x, c.y, c.w, c.h); }
+}
+function drawPressed() {
+  for (const b of buttons) {
+    const [x, y, w, h] = b.bbox, key = S.pressed.get(b.name);
+    if (key) ctx.drawImage(b.patch[key], x, y); else ctx.drawImage(base, x, y, w, h, x, y, w, h);
+  }
+}
+function updateHud() {
+  const t = (S.f * FRAME_MS / 1000).toFixed(1);
+  const state = (S.paused ? 'paused' : (S.dir < 0 ? 'reverse ' : 'playing ') + S.speed + 'x');
+  act.innerHTML = (S.current ? '<b>' + S.current + '</b>' : 'press a button') + ' &nbsp;&middot;&nbsp; frame ' + (S.f + 1) + '/' + N + ' (' + t + ' s) ' + state;
+}
+
+function tick(now) {
+  const dt = now - S.last; S.last = now;
+  if (!S.paused) {
+    S.acc += dt * S.speed;
+    while (S.acc >= FRAME_MS) { S.acc -= FRAME_MS; S.f = (S.f + S.dir + N) % N; S.dirty = true; }
+  }
+  if (S.dirty) { drawFrame(); S.dirty = false; updateHud(); }
+  requestAnimationFrame(tick);
+}
+
+/* ---------- hit testing on the button masks (alpha channel of each mask) */
+function hit(px, py) {
+  for (const b of buttons) {
+    const [x, y, w, h] = b.bbox, lx = Math.floor(px - x), ly = Math.floor(py - y);
+    if (lx < 0 || ly < 0 || lx >= w || ly >= h) continue;
+    if (b.alpha[ly * w + lx] > 0) {
+      if (b.name === 'dpad') { const [cx, cy] = b.centre; return { name: 'dpad', key: (py < cy ? 'n' : 's') + (px < cx ? 'w' : 'e') }; }
+      return { name: b.name, key: 'down' };
+    }
+  }
+  return null;
+}
+function toImage(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * A.w / r.width, (e.clientY - r.top) * A.h / r.height]; }
+
+function press(name, key, id) {
+  S.pressed.set(name, key);
+  const a = ACTIONS[name === 'dpad' ? key : name];
+  S.current = a.label; a.run(); S.dirty = true; drawPressed(); updateHud();
+  held.set(id, name);
+}
+function release(id) {
+  const name = held.get(id); if (!name) return;
+  held.delete(id); S.pressed.delete(name); drawPressed();
+}
+const held = new Map();
+
+cv.addEventListener('pointerdown', e => {
+  const h = hit(...toImage(e)); if (!h) return;
+  cv.setPointerCapture(e.pointerId); press(h.name, h.key, 'p' + e.pointerId); e.preventDefault();
+});
+const up = e => release('p' + e.pointerId);
+cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+cv.addEventListener('pointermove', e => { cv.classList.toggle('over', !!hit(...toImage(e))); });
+
+/* ---------- keyboard */
+const KEYS = { ArrowUp: ['dpad', 'nw'], ArrowRight: ['dpad', 'ne'], ArrowLeft: ['dpad', 'sw'], ArrowDown: ['dpad', 'se'],
+               z: ['a', 'down'], Z: ['a', 'down'], x: ['b', 'down'], X: ['b', 'down'], Enter: ['start', 'down'],
+               ' ': ['select', 'down'], p: ['power', 'down'], P: ['power', 'down'], o: ['pokeball', 'down'], O: ['pokeball', 'down'] };
+addEventListener('keydown', e => {
+  const k = KEYS[e.key]; if (!k || e.repeat) return; e.preventDefault(); press(k[0], k[1], 'k' + e.key);
+});
+addEventListener('keyup', e => { if (KEYS[e.key]) release('k' + e.key); });
+addEventListener('blur', () => { for (const id of [...held.keys()]) release(id); });
+
+/* ---------- load */
+(async () => {
+  try {
+    base = await img(A.base);
+    comps = await Promise.all(A.comps.map(async c => ({ ...c, img: await img(c.sheet) })));
+    buttons = await Promise.all(A.buttons.map(async b => {
+      const mi = await img(b.mask), [x, y, w, h] = b.bbox;
+      const mc = document.createElement('canvas'); mc.width = w; mc.height = h; const mx = mc.getContext('2d'); mx.drawImage(mi, 0, 0);
+      const d = mx.getImageData(0, 0, w, h).data, alpha = new Uint8Array(w * h); for (let i = 0; i < alpha.length; i++) alpha[i] = d[i * 4 + 3];
+      const patch = {}; for (const k of Object.keys(b.patches)) patch[k] = await img(b.patches[k]);
+      /* D-pad arms are keyed nw/ne/sw/se in the assets, plain 'down' for every other button */
+      return { ...b, alpha, patch };
+    }));
+    ctx.drawImage(base, 0, 0);
+    const px = ctx.getImageData(2, 2, 1, 1).data; document.documentElement.style.setProperty('--bg', `rgb(${px[0]},${px[1]},${px[2]})`);
+    document.body.style.background = `rgb(${px[0]},${px[1]},${px[2]})`;
+    requestAnimationFrame(tick);
+    window.PIXEL = { S, jump, step, ACTIONS, press, release };
+  } catch (err) { console.error(err); document.getElementById('fallback').style.display = 'block'; }
+})();
+</script>
+</body>
+</html>

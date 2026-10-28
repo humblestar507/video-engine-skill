@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+tests/clips/
+tests/long/
+tests/.cache*/
+tests/browser_check/
+.claude/

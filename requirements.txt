@@ -1,0 +1,5 @@
+numpy
+scipy
+opencv-contrib-python-headless
+librosa
+soundfile

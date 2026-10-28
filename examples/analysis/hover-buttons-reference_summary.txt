@@ -1,0 +1,6 @@
+video: -hac-lwzegO_3QQN.mp4 | 17.750s | 3840x2108 | 60.000 fps CFR (dt 16.7-16.7 ms) | 1065 frames | audio: none
+scenes: 1 | no cuts
+activity (top): 1.20-1.67s, 4.58-5.35s, 6.78-7.32s, 8.32-8.92s, 9.33-10.70s | 21 segments
+motion: 18 object-motion segments
+audio: no audio stream
+warnings: camera assumed static (no texture to measure) in scenes [0]

@@ -1,0 +1,29 @@
+{
+ "per_button": {
+  "AUTHORIZE": {
+   "original": 3,
+   "replica": 3,
+   "matched": 3,
+   "missed": 0,
+   "extra": 0
+  },
+  "DOWNLOAD": {
+   "original": 6,
+   "replica": 6,
+   "matched": 6,
+   "missed": 0,
+   "extra": 0
+  },
+  "PUBLISH": {
+   "original": 4,
+   "replica": 4,
+   "matched": 4,
+   "missed": 0,
+   "extra": 0
+  }
+ },
+ "median_ms": 58.33299999999974,
+ "p95_ms": 133.33300000000014,
+ "max_ms": 166.66599999999931,
+ "n": 26
+}

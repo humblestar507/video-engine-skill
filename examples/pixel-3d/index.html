@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Pixel console 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #242424; overflow: hidden; color: #b9a9ad;
+               font: 13px/1.4 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #hud { position: fixed; left: 0; right: 0; bottom: 10px; text-align: center; pointer-events: none; letter-spacing: .04em; }
+  #hud b { color: #e8d9dc; font-weight: 600; }
+  #hud small { opacity: .6; font-size: 12px; }
+  #err { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+</style>
+</head>
+<body>
+<div id="hud"><span id="act">press a button</span><br><small>drag = rotate &middot; wheel = zoom &middot; double-click = reset view &middot; arrows = D-pad &middot; Z = A &middot; X = B &middot; Enter = Start &middot; Space = Select &middot; P = Power &middot; O = Ball &middot; [ ] = pixel size</small></div>
+<div id="err">Could not load three.js from the CDN (needs internet) or WebGL is unavailable.</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script>
+if (!window.THREE) { document.getElementById('err').style.display = 'flex'; throw new Error('three.js missing'); }
+
+/* ============================================================ palette (sRGB, picked from the 2D artwork) */
+const C = { body: 0xe4402f, bodyHi: 0xf26a50, bodyLo: 0xb02a35, lid: 0xc23338, dark: 0x1b1517, bezel: 0x2a1418, screenDark: 0x1a0a0e,
+            grey: 0x9a9ab5, greyHi: 0xc9c9dd, greyLo: 0x6a6a86, white: 0xe8e6ee, g1: 0x2f8f3a, g2: 0x45b043, g3: 0x78d54f, g4: 0x1f6b35, leaf: 0x2c7a3a, leafHi: 0x5fc447 };
+const MM = 1;                                            /* 1 unit = 1 mm */
+
+/* ============================================================ renderer: low-res target + posterize/dither pass */
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+document.body.appendChild(renderer.domElement);
+const cvs = renderer.domElement;
+let PIX = Math.max(2, Math.min(6, Math.round(innerHeight / 270)));
+let rt, W, H;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x242424);            /* exactly on a posterize level, so the dither leaves it flat */
+const camera = new THREE.PerspectiveCamera(32, 1, 10, 2000);
+const post = { scene: new THREE.Scene(), cam: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1) };
+const postMat = new THREE.ShaderMaterial({
+  uniforms: { tDiffuse: { value: null }, res: { value: new THREE.Vector2(1, 1) }, levels: { value: 7 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+  fragmentShader: 'uniform sampler2D tDiffuse; uniform vec2 res; uniform float levels; varying vec2 vUv;' +
+    'float ign(vec2 p){ return fract(52.9829189 * fract(dot(floor(p), vec2(0.06711056, 0.00583715)))); }' +
+    'void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb; float t = ign(vUv * res) - 0.5;' +
+    ' c += t / levels * 0.85; c = floor(c * levels + 0.5) / levels; gl_FragColor = vec4(c, 1.); }',
+  depthTest: false, depthWrite: false });
+post.scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
+
+function resize() {
+  const dpr = 1;                                          /* low-res target is upscaled by nearest filtering */
+  renderer.setPixelRatio(dpr); renderer.setSize(innerWidth, innerHeight, false);
+  W = Math.max(64, Math.ceil(innerWidth / PIX)); H = Math.max(64, Math.ceil(innerHeight / PIX));
+  if (rt) rt.dispose();
+  rt = new THREE.WebGLRenderTarget(W, H, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: true });
+  postMat.uniforms.tDiffuse.value = rt.texture; postMat.uniforms.res.value.set(W, H);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+/* ============================================================ lights */
+scene.add(new THREE.AmbientLight(0xffffff, 0.62));
+const sun = new THREE.DirectionalLight(0xfff0e0, 0.85); sun.position.set(-90, 160, 120); scene.add(sun);
+const fill = new THREE.DirectionalLight(0x8090ff, 0.22); fill.position.set(120, 40, -60); scene.add(fill);
+
+/* ============================================================ helpers */
+const matCache = new Map();
+function mat(color, opts = {}) {
+  const k = color + JSON.stringify(opts); if (matCache.has(k)) return matCache.get(k);
+  const m = new THREE.MeshLambertMaterial({ color, flatShading: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, ...opts });
+  matCache.set(k, m); return m;
+}
+const edgeMat = new THREE.LineBasicMaterial({ color: C.dark });
+function box(w, h, d, color, parent, x = 0, y = 0, z = 0, edges = true) {
+  const g = new THREE.BoxGeometry(w, h, d), m = new THREE.Mesh(g, mat(color)); m.position.set(x, y, z);
+  if (edges) m.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), edgeMat));
+  parent.add(m); return m;
+}
+function cyl(r, h, color, parent, x, y, z, seg = 14, edges = true) {
+  const g = new THREE.CylinderGeometry(r, r, h, seg), m = new THREE.Mesh(g, mat(color)); m.position.set(x, y, z);
+  if (edges) m.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 40), edgeMat));
+  parent.add(m); return m;
+}
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+
+/* ============================================================ the console */
+const sp = new THREE.Group(); scene.add(sp); sp.position.y = 3;
+const BW = 82, BD = 80, BH = 14;                          /* base: width, depth, height */
+const base = new THREE.Group(); sp.add(base);
+box(BW, BH, BD, C.body, base, 0, BH / 2, 0);
+box(BW + 1, 3, BD + 1, C.bodyLo, base, 0, 1.5, 0);          /* lower shadow band */
+box(BW - 4, 2, 22, 0xec5236, base, 0, BH + 0.4, 28, false); /* soft front highlight */
+box(BW, 4, 6, C.bodyLo, base, 0, BH - 2, BD / 2 + 0.5);     /* front lip */
+
+/* lid on a hinge at the back edge */
+const hinge = new THREE.Group(); hinge.position.set(0, BH, -BD / 2 + 2); sp.add(hinge);
+const lid = new THREE.Group(); hinge.add(lid);
+box(BW, 10, 80, C.lid, lid, 0, 5, 40);                       /* closed: lies on the base, screen face down (y = 0) */
+box(BW - 8, 1.2, 64, C.bezel, lid, 0, -0.1, 41, false);      /* bezel */
+box(BW + 1, 2.4, 6, C.bodyLo, lid, 0, 9, 79, false);         /* top edge band */
+const SCW = 54, SCH = 36;
+const screenCanvas = document.createElement('canvas'); screenCanvas.width = 120; screenCanvas.height = 80;
+const sctx = screenCanvas.getContext('2d'); sctx.imageSmoothingEnabled = false;
+const screenTex = new THREE.CanvasTexture(screenCanvas); screenTex.magFilter = THREE.NearestFilter; screenTex.minFilter = THREE.NearestFilter;
+const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(SCW, SCH), new THREE.MeshBasicMaterial({ map: screenTex }));
+screenMesh.rotation.x = Math.PI / 2;   /* faces -y (the lid's inner face); its +y runs along the lid, i.e. up when open */
+screenMesh.position.set(0, -0.75, 40); lid.add(screenMesh);
+const bez2 = box(SCW + 6, 0.8, SCH + 6, C.screenDark, lid, 0, -0.4, 40, false);
+const OPEN = -(105 * Math.PI / 180); hinge.rotation.x = OPEN;
+const hingeCyl = cyl(4.2, 70, C.bodyLo, sp, 0, BH + 0.5, -BD / 2 + 1.5, 10); hingeCyl.rotation.z = Math.PI / 2;
+for (const sx of [-33, 33]) { const c = cyl(5, 12, C.lid, sp, sx, BH + 1, -BD / 2 + 1.5, 10); c.rotation.z = Math.PI / 2; }
+for (const [x, z] of [[-34, 18], [34, 18]]) cyl(2.2, 0.6, C.bodyHi, base, x, BH + 0.3, z, 8, false);   /* screws */
+
+/* decorative rivets on the lid corners (like the dots on the artwork's frame) */
+for (const [x, z] of [[-34, 6], [34, 6], [-34, 74], [34, 74]]) { const r = cyl(2, 0.8, C.bodyHi, lid, x, -0.6, z, 8, false); }
+
+/* ============================================================ interactive controls */
+const interactive = [];                                  /* meshes with userData.action */
+function ctrl(mesh, action, arm) { mesh.userData = { action, arm: arm || null, p: 0, target: 0, restY: mesh.position.y, rest: mesh.position.clone(), restRot: mesh.rotation.clone() }; interactive.push(mesh); return mesh; }
+const topY = BH;
+
+/* D-pad: dark recess + centre + 4 arms (each arm is its own button) */
+const padX = -24, padZ = 8;
+cyl(15, 0.8, C.bodyLo, base, padX, topY + 0.1, padZ, 20, false);
+box(7, 2, 7, C.grey, base, padX, topY + 1, padZ);
+const armLen = 8.5, armW = 7;
+ctrl(box(armLen, 2, armW, C.grey, base, padX - 7.8, topY + 1, padZ), 'sw', { axis: 'z', dir: 1 });       /* Left */
+ctrl(box(armLen, 2, armW, C.grey, base, padX + 7.8, topY + 1, padZ), 'ne', { axis: 'z', dir: -1 });      /* Right */
+ctrl(box(armW, 2, armLen, C.grey, base, padX, topY + 1, padZ - 7.8), 'nw', { axis: 'x', dir: -1 });      /* Up (towards the screen) */
+ctrl(box(armW, 2, armLen, C.grey, base, padX, topY + 1, padZ + 7.8), 'se', { axis: 'x', dir: 1 });       /* Down */
+
+/* A / B */
+cyl(8, 0.8, C.bodyLo, base, 28, topY + 0.1, -3, 16, false);
+cyl(8, 0.8, C.bodyLo, base, 15, topY + 0.1, 6, 16, false);
+ctrl(cyl(5.4, 2.4, C.grey, base, 28, topY + 1.2, -3, 14), 'a');
+ctrl(cyl(5.4, 2.4, C.grey, base, 15, topY + 1.2, 6, 14), 'b');
+/* Start / Select, power, ball decal */
+ctrl(box(6.5, 1.8, 3.6, C.grey, base, 12, topY + 0.9, 27), 'start');
+ctrl(box(6.5, 1.8, 3.6, C.grey, base, 24, topY + 0.9, 22), 'select');
+ctrl(box(7, 2, 3.4, C.greyLo, base, -36, topY + 1, -28), 'power');
+const decal = new THREE.Group(); base.add(decal); decal.position.set(34, topY + 0.2, 13);
+cyl(9, 1, C.white, decal, 0, 0.5, 0, 18); const dtop = cyl(9, 1.2, C.bodyLo, decal, 0, 0.9, 0, 18, false);
+dtop.geometry = new THREE.CylinderGeometry(9, 9, 1.2, 18, 1, false, 0, Math.PI);
+dtop.rotation.y = 0.9; cyl(2.6, 1.6, C.white, decal, 0, 1.2, 0, 10);
+ctrl(decal.children[0], 'pokeball');                      /* hit area = the white disc */
+/* speaker grill */
+for (let i = 0; i < 6; i++) for (let j = 0; j < 3; j++) box(1.4, 0.6, 1.4, C.bodyLo, base, -2 + i * 3, topY + 0.2, 23 + j * 3, false);
+/* LED next to the hinge */
+const led = box(3, 1.2, 3, 0x2ee6c8, base, 28, topY + 0.6, -30, false); led.material = new THREE.MeshBasicMaterial({ color: 0x2ee6c8 });
+
+/* ============================================================ the grass base, plants and capsules */
+const gr = []; for (let x = -92; x <= 92; x += 4) for (let z = -84; z <= 84; z += 4) {
+  const e = (x / 92) ** 2 + (z / 84) ** 2 + (rnd() - 0.5) * 0.18; if (e > 1) continue;
+  const under = Math.abs(x) < 44 && Math.abs(z) < 42;
+  gr.push([x, z, under ? -6 : -2 - rnd() * 3 + (e < 0.7 ? 3 : 0) * rnd(), e]);
+}
+const grass = new THREE.InstancedMesh(new THREE.BoxGeometry(4, 8, 4), new THREE.MeshLambertMaterial({ flatShading: true }), gr.length);
+const tmp = new THREE.Object3D(), col = new THREE.Color();
+gr.forEach(([x, z, top, e], i) => {
+  tmp.position.set(x, top - 4, z); tmp.updateMatrix(); grass.setMatrixAt(i, tmp.matrix);
+  const k = rnd(); col.setHex(top > -1 ? (k > .5 ? C.g3 : C.g2) : (top > -3 ? (k > .5 ? C.g2 : C.g1) : (k > .4 ? C.g1 : C.g4))); grass.setColorAt(i, col);
+});
+scene.add(grass);
+function leaf(parent, x, z, len, yaw, lean, color) {
+  const g = new THREE.BoxGeometry(3.2, len, 1.4), m = new THREE.Mesh(g, mat(color)); m.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), edgeMat));
+  const piv = new THREE.Group(); piv.position.set(x, 0, z); piv.rotation.y = yaw; m.position.y = len / 2; piv.add(m); piv.rotation.z = lean; // lean about the base
+  parent.add(piv);
+}
+const plantA = new THREE.Group(); scene.add(plantA); plantA.position.set(48, -1, -36);
+for (let i = 0; i < 7; i++) leaf(plantA, 0, 0, 30 + rnd() * 16, i * 0.9 + rnd() * .4, (rnd() - 0.2) * 0.85 + 0.2, i % 2 ? C.leaf : C.leafHi);
+const plantB = new THREE.Group(); scene.add(plantB); plantB.position.set(-56, -1, 30);
+for (let i = 0; i < 5; i++) leaf(plantB, 0, 0, 22 + rnd() * 10, i * 1.2 + rnd() * .5, 0.3 + rnd() * 0.5, i % 2 ? C.leaf : C.leafHi);
+function capsule(x, z, s) {
+  const g = new THREE.Group(); scene.add(g); g.position.set(x, 5, z); g.scale.setScalar(s); g.rotation.y = rnd() * 6;
+  const top = new THREE.Mesh(new THREE.SphereGeometry(12, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), mat(C.body)); g.add(top);
+  const bot = new THREE.Mesh(new THREE.SphereGeometry(12, 10, 6, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), mat(C.white)); g.add(bot);
+  const band = cyl(12.3, 1.8, C.dark, g, 0, 0, 0, 10, false); const btn = cyl(3, 1.2, C.white, g, 0, 0, 12.1, 8, false); btn.rotation.x = Math.PI / 2;
+}
+capsule(-40, 54, 1); capsule(36, 56, 1.05); capsule(50, 14, 0.8);
+for (const [x, z] of [[-18, 62], [-10, 66], [-14, 70]]) { box(3, 3, 3, C.white, scene, x, 1.5, z, false); box(1.2, 1.4, 1.2, 0xff9a3a, scene, x, 3.2, z, false); }
+
+/* ============================================================ the screen (own content; events follow the timing measured in the 2D loop) */
+const N = 42, FRAME_MS = 100;
+const FONT = { P: ['1110', '1001', '1001', '1110', '1000', '1000', '1000'], I: ['111', '010', '010', '010', '010', '010', '111'],
+  X: ['1001', '1001', '0110', '0110', '0110', '1001', '1001'], E: ['1111', '1000', '1000', '1110', '1000', '1000', '1111'],
+  L: ['1000', '1000', '1000', '1000', '1000', '1000', '1111'], A: ['0110', '1001', '1001', '1111', '1001', '1001', '1001'],
+  D: ['1110', '1001', '1001', '1001', '1001', '1001', '1110'], V: ['1001', '1001', '1001', '1001', '1001', '0110', '0110'] };
+const BLOB = ['..........####..........', '........########..#.....', '......############.##....', '....################.#...', '..###################.#..', '.####################.#..', '######################...', '.#####################...', '..####################...', '...##.##....##...##......'];
+function frng(f) { let s = f * 9301 + 49297; return () => (s = (s * 16807 + 12345) % 2147483647) / 2147483647; }
+function text(ctx, str, x, y, fill, scale) {
+  let cx = x; for (const ch of str) { const g = FONT[ch]; if (!g) { cx += 4 * scale; continue; }
+    g.forEach((row, ry) => [...row].forEach((v, rx) => { if (v === '1') { ctx.fillStyle = fill; ctx.fillRect(cx + rx * scale, y + ry * scale, scale, scale); } }));
+    cx += (g[0].length + 1) * scale; }
+}
+function drawScreen(f) {
+  const c = sctx, r = frng(f + 3);
+  const bands = ['#b8323c', '#a82c40', '#962a44', '#7f2748', '#69234a', '#521f48']; bands.forEach((b, i) => { c.fillStyle = b; c.fillRect(0, i * 14, 120, 14); });
+  for (let y = 0; y < 80; y += 2) for (let x = (y / 2) % 2; x < 120; x += 2) { if ((x + y) % 14 < 2) { c.fillStyle = 'rgba(0,0,0,.10)'; c.fillRect(x, y, 1, 1); } }
+  /* title: blue outline, yellow face */
+  const tx = 20, ty = 10;
+  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1], [-1, 1], [1, -1]]) text(c, 'PIXEL', tx + dx, ty + dy, '#2a52be', 4);
+  text(c, 'PIXEL', tx, ty, '#ffd63a', 4);
+  for (const [dy, w] of [[40, 30], [43, 24], [46, 18]]) { c.fillStyle = '#f4eaf0'; c.fillRect(46 + (30 - w) / 2, dy, w, 1); }
+  /* creature silhouette */
+  const bx = 28, by = 52; const mask = [];
+  BLOB.forEach((row, ry) => [...row].forEach((v, rx) => { if (v === '#') { c.fillStyle = '#3a0a12'; c.fillRect(bx + rx * 2, by + ry * 2, 2, 2); mask.push([bx + rx * 2, by + ry * 2]); } }));
+  c.fillStyle = '#ffffff'; c.fillRect(bx + 8, by + 6, 2, 2);
+  /* blue pattern: appears over frames 2-9, holds, dissolves over 21-26 */
+  const p = f < 2 ? 0 : f < 10 ? (f - 1) / 8 : f < 21 ? 1 : f < 27 ? 1 - (f - 20) / 6 : 0;
+  if (p > 0) { const rr = frng(77); mask.forEach(([x, y]) => { if (rr() < 0.32 * p && (x + y) % 4 === 0) { c.fillStyle = '#5a6fe0'; c.fillRect(x, y, 1, 1); c.fillRect(x + 1, y + 1, 1, 1); } }); }
+  /* glare streaks at frames 0-1, 18-19, 31-32 */
+  for (const s of [0, 18, 31]) if (f === s || f === s + 1) { const k = f - s; c.save(); c.globalAlpha = 0.28; c.strokeStyle = '#fff4f4'; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(0, 56 - k * 12); c.lineTo(120, 20 - k * 12); c.stroke(); c.restore(); }
+  /* glitch bursts: yellow noise at frames 10-12, red scribble at 33-34 */
+  if (f >= 10 && f <= 12) for (let i = 0; i < 46; i++) { c.fillStyle = r() > 0.5 ? '#ffb02a' : '#fff06a'; c.fillRect(20 + r() * 78, 8 + r() * 26, 2 + (r() * 4 | 0), 2); }
+  if (f === 33 || f === 34) { c.strokeStyle = '#ff2a2a'; c.lineWidth = 1; for (let i = 0; i < 4; i++) { c.beginPath(); c.moveTo(18 + r() * 20, 12 + r() * 24); c.lineTo(60 + r() * 50, 6 + r() * 26); c.stroke(); } }
+  for (let y = 0; y < 80; y += 2) { c.fillStyle = 'rgba(0,0,0,.10)'; c.fillRect(0, y, 120, 1); }      /* scanlines */
+  screenTex.needsUpdate = true;
+}
+
+/* ============================================================ playback state + actions */
+const S = { f: 0, acc: 0, dir: 1, paused: false, speed: 1, dirty: true, current: '' };
+const jump = f => { S.f = f; S.acc = 0; S.paused = false; S.dir = 1; S.dirty = true; };
+const ACTIONS = {
+  a: ['A - restart the loop', () => jump(0)], b: ['B - reverse direction', () => { S.dir *= -1; }],
+  start: ['Start - logo glitch', () => jump(10)], select: ['Select - pause / resume', () => { S.paused = !S.paused; }],
+  power: ['Power - speed 1x / 0.5x / 2x', () => { S.speed = S.speed === 1 ? 0.5 : S.speed === 0.5 ? 2 : 1; }],
+  pokeball: ['Ball - step one frame', () => { S.paused = true; S.f = (S.f + S.dir + N) % N; S.dirty = true; }],
+  nw: ['Up - light streak across the screen', () => jump(18)], ne: ['Right - blue pattern appears', () => jump(2)],
+  sw: ['Left - blue pattern dissolves', () => jump(21)], se: ['Down - red glitch on the title', () => jump(31)],
+};
+const act = document.getElementById('act');
+function hud() { act.innerHTML = (S.current ? '<b>' + S.current + '</b>' : 'press a button') + ' &nbsp;&middot;&nbsp; frame ' + (S.f + 1) + '/' + N + ' (' + (S.f * FRAME_MS / 1000).toFixed(1) + ' s) ' + (S.paused ? 'paused' : (S.dir < 0 ? 'reverse ' : 'playing ') + S.speed + 'x'); }
+
+const held = new Map();
+function press(mesh, id) { mesh.userData.target = 1; const a = ACTIONS[mesh.userData.action]; S.current = a[0]; a[1](); S.dirty = true; held.set(id, mesh); hud(); }
+function release(id) { const m = held.get(id); if (m) { m.userData.target = 0; held.delete(id); } }
+
+/* ============================================================ orbit camera (drag / wheel / double-click) + picking */
+const cam = { theta: 0.62, phi: 1.1, r: 360, tx: 0, ty: 28, tz: 6 }, cam0 = { ...cam };
+const goal = { ...cam };
+function placeCamera() {
+  camera.position.set(cam.tx + cam.r * Math.sin(cam.phi) * Math.sin(cam.theta), cam.ty + cam.r * Math.cos(cam.phi), cam.tz + cam.r * Math.sin(cam.phi) * Math.cos(cam.theta));
+  camera.lookAt(cam.tx, cam.ty, cam.tz);
+}
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+function pick(e) { ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects(interactive, false)[0]; return hit ? hit.object : null; }
+const drag = new Map(); let hover = null;
+cvs.addEventListener('pointerdown', e => {
+  const m = pick(e); cvs.setPointerCapture(e.pointerId);
+  if (m) { press(m, 'p' + e.pointerId); drag.set(e.pointerId, { btn: true }); } else drag.set(e.pointerId, { x: e.clientX, y: e.clientY });
+});
+cvs.addEventListener('pointermove', e => {
+  const d = drag.get(e.pointerId);
+  if (d && !d.btn) { goal.theta -= (e.clientX - d.x) * 0.008; goal.phi = Math.max(0.25, Math.min(1.5, goal.phi - (e.clientY - d.y) * 0.008)); d.x = e.clientX; d.y = e.clientY; }
+  else if (!d) { hover = pick(e); cvs.style.cursor = hover ? 'pointer' : 'grab'; }
+});
+const up = e => { release('p' + e.pointerId); drag.delete(e.pointerId); };
+cvs.addEventListener('pointerup', up); cvs.addEventListener('pointercancel', up);
+cvs.addEventListener('wheel', e => { e.preventDefault(); goal.r = Math.max(120, Math.min(560, goal.r * Math.exp(e.deltaY * 0.0012))); }, { passive: false });
+cvs.addEventListener('dblclick', () => Object.assign(goal, cam0));
+
+const KEYS = { ArrowUp: 'nw', ArrowRight: 'ne', ArrowLeft: 'sw', ArrowDown: 'se', z: 'a', Z: 'a', x: 'b', X: 'b', Enter: 'start', ' ': 'select', p: 'power', P: 'power', o: 'pokeball', O: 'pokeball' };
+addEventListener('keydown', e => {
+  if (e.key === '[' || e.key === ']') { PIX = Math.max(2, Math.min(10, PIX + (e.key === ']' ? 1 : -1))); resize(); return; }
+  const a = KEYS[e.key]; if (!a || e.repeat) return; e.preventDefault(); const m = interactive.find(o => o.userData.action === a); if (m) press(m, 'k' + e.key);
+});
+addEventListener('keyup', e => { if (KEYS[e.key]) release('k' + e.key); });
+addEventListener('blur', () => [...held.keys()].forEach(release));
+
+/* ============================================================ loop */
+resize(); placeCamera(); cvs.style.cursor = 'grab';
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(100, now - last); last = now;
+  if (!S.paused) { S.acc += dt * S.speed; while (S.acc >= FRAME_MS) { S.acc -= FRAME_MS; S.f = (S.f + S.dir + N) % N; S.dirty = true; } }
+  if (S.dirty) { drawScreen(S.f); S.dirty = false; hud(); }
+  for (const k of ['theta', 'phi', 'r']) cam[k] += (goal[k] - cam[k]) * Math.min(1, dt * 0.014);
+  placeCamera();
+  for (const m of interactive) {                          /* spring the pressed state */
+    const u = m.userData; u.p += (u.target - u.p) * Math.min(1, dt * 0.03);
+    m.position.y = u.rest.y - 1.5 * u.p;
+    if (u.arm) { const t = 0.16 * u.p * u.arm.dir; m.rotation.set(u.arm.axis === 'x' ? t : 0, 0, u.arm.axis === 'z' ? t : 0); }
+    const hov = m === hover ? 0.22 : 0; m.material.emissive && m.material.emissive.setScalar(hov);
+  }
+  led.material.color.setHex(Math.floor(now / 450) % 2 ? 0x2ee6c8 : 0x0f5a50);
+  renderer.setRenderTarget(rt); renderer.render(scene, camera);
+  renderer.setRenderTarget(null); renderer.render(post.scene, post.cam);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+window.CONSOLE3D = { S, jump, press, release, interactive, goal, cam, PIXEL: () => PIX };
+</script>
+</body>
+</html>

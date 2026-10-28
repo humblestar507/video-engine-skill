@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hover buttons</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  /* Laid out on a 1920x1054 design stage (the source video is 3840x2108: 1 design px = 2 video px),
+     scaled to the window. Dimensions, colours and timings come from measurements of the source video. */
+  :root { --bg: #dfe0d6; --light: #dfe0d6; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1054px; transform-origin: 0 0; }
+  #row { position: absolute; left: 0; right: 0; top: 527px; display: flex; justify-content: center; gap: 154px; padding-left: 9px; }
+
+  .vbtn {
+    all: unset; position: relative; display: block; height: 67px; margin-top: -33.5px; cursor: pointer;
+    --c: #f0529d; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+  /* .o: origin = left edge of the idle icon, centre line of the label */
+  .vbtn .o { position: absolute; left: 0; top: 33.5px; width: 0; height: 0; }
+  .vbtn .fill { position: absolute; background: var(--c); }
+  .vbtn .dot { position: absolute; width: 3.75px; height: 3.75px; background: var(--light); margin: -1.875px 0 0 -1.875px; }
+  .vbtn .label {
+    position: absolute; left: 55.5px; top: -24.5px; height: 49px; white-space: pre; color: var(--c);
+    font: 400 49px/49px "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-kerning: none; font-variant-ligatures: none; letter-spacing: 0;
+  }
+  .vbtn .label.on { color: var(--light); }
+  .vbtn .focus { position: absolute; border: 2px solid var(--c); opacity: 0; pointer-events: none; }
+  .vbtn:focus-visible .focus { opacity: 1; }
+  #toast {
+    position: absolute; left: 0; right: 0; top: 760px; text-align: center; opacity: 0; transition: opacity .25s;
+    font: 400 20px "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; color: #8b8d80; letter-spacing: .08em;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="row">
+    <button class="vbtn" data-label="AUTHORIZE" style="--c:#f0529d" type="button"></button>
+    <button class="vbtn" data-label="DOWNLOAD"  style="--c:#434df6" type="button"></button>
+    <button class="vbtn" data-label="PUBLISH"   style="--c:#ef6a4b" type="button"></button>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+</div>
+
+<script>
+/* Measured from the source video (60 fps, PTS times). Pointer zones in design px: inside the hover box -> hover,
+   within 80 -> armed (tall column), within 150 -> near (sparkle). Wipe in = 350 ms, wipe out = 417 ms; the curves below
+   are the measured per-frame progress of the fill edges. Entering states snaps (<=2 frames), leaving eases ~130 ms. */
+const CURVES = {"AUTHORIZE": {"Rin": [0.0, 0.1092, 0.2912, 0.4232, 0.5264, 0.6495, 0.7444, 0.8202, 0.8798, 0.9145, 0.9382, 0.9584, 0.9729, 0.9805, 0.9863, 0.9913, 0.9946, 0.9971, 0.9991, 1.0, 1.0, 1.0], "Lin": [0.0, 0.1404, 0.3178, 0.4264, 0.5219, 0.6521, 0.7364, 0.7964, 0.8559, 0.8921, 0.9162, 0.94, 0.9522, 0.9524, 0.9524, 0.9524, 0.9524, 0.9641, 0.9876, 0.9998, 1.0, 1.0], "Rout": [0.0, 0.1147, 0.213, 0.3357, 0.4856, 0.6022, 0.6946, 0.7845, 0.8532, 0.8934, 0.9235, 0.9506, 0.9656, 0.9754, 0.9842, 0.9898, 0.9924, 0.9949, 0.9974, 0.9983, 0.9987, 0.9996, 1.0, 1.0, 1.0, 1.0], "Lout": [0.0, 0.0985, 0.1857, 0.2977, 0.4592, 0.5972, 0.6857, 0.761, 0.8237, 0.8618, 0.887, 0.8997, 0.9123, 0.937, 0.962, 0.987, 0.9998, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], "dur": {"in": 0.35, "out": 0.417}}, "DOWNLOAD": {"Rin": [0.0, 0.0634, 0.1855, 0.3414, 0.4905, 0.6181, 0.7126, 0.7843, 0.8524, 0.9039, 0.9352, 0.9577, 0.9734, 0.9835, 0.9899, 0.9954, 0.9991, 1.0], "Lin": [0.0, 0.065, 0.1969, 0.3528, 0.4898, 0.6018, 0.689, 0.764, 0.8385, 0.8877, 0.9002, 0.9133, 0.9507, 0.9878, 1.0, 1.0, 1.0, 1.0], "Rout": [0.0, 0.0861, 0.2078, 0.3683, 0.5142, 0.6376, 0.7279, 0.794, 0.8568, 0.9088, 0.9402, 0.954, 0.9655, 0.9767, 0.9841, 0.9888, 0.9925, 0.9953, 0.9972, 0.999, 1.0], "Lout": [0.0, 0.0862, 0.1978, 0.3593, 0.5156, 0.6474, 0.7419, 0.8111, 0.8738, 0.9117, 0.937, 0.962, 0.987, 0.9998, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], "dur": {"in": 0.283, "out": 0.337}}, "PUBLISH": {"Rin": [0.0, 0.1608, 0.3029, 0.4556, 0.5889, 0.6962, 0.7805, 0.8428, 0.8857, 0.9161, 0.9437, 0.9633, 0.9757, 0.9835, 0.9882, 0.9917, 0.9958, 0.9989, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], "Lin": [0.0, 0.1666, 0.3098, 0.4534, 0.5726, 0.6853, 0.7855, 0.8488, 0.899, 0.9367, 0.9497, 0.95, 0.9622, 0.987, 0.9998, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], "Rout": [0.0, 0.143, 0.2993, 0.4624, 0.6038, 0.6965, 0.7691, 0.84, 0.8972, 0.9317, 0.9481, 0.9614, 0.9736, 0.9831, 0.9905, 0.9953, 0.9974, 0.9984, 1.0], "Lout": [0.0, 0.1184, 0.2632, 0.4277, 0.579, 0.6776, 0.75, 0.8289, 0.8947, 0.9342, 0.9474, 0.9474, 0.9474, 0.9606, 0.9869, 1.0, 1.0, 1.0, 1.0], "dur": {"in": 0.417, "out": 0.3}}};   /* per button: measured per-frame progress of the fill's right/left edge, enter and exit */
+const DOT = 3.75, LABEL_X = 55.5, HIT_MX = 28, HIT_MY = 10;   /* hover hit-area padding fitted on the source video */
+const css = a => a.map(([x, y]) => [x / 2, y / 2]);                       /* video px -> design px */
+const offs = (ax, o) => o.map(([x, y]) => [ax + x, y]);
+
+/* AUTHORIZE: 2x2 clusters / ring (dot positions measured relative to the icon: offsets from an anchor) */
+const grid  = [[-8.8,-2.9],[-2.9,-2.9],[2.9,-2.9],[8.8,-2.9],[-8.8,2.9],[-2.9,2.9],[2.9,2.9],[8.8,2.9]];
+function cluster(cx, cy, deg) {                       /* 2x2 dots with a thin gap, rotated */
+  const r = deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r), h = (DOT + 0.55) / 2;
+  return [[-h,-h],[h,-h],[-h,h],[h,h]].map(([x, y]) => [cx + x * c - y * s, cy + x * s + y * c]);
+}
+const A_near  = [...cluster(4.1, -5.0, 28), ...cluster(-4.2, 4.4, 28)];
+const A_armed = [[-2.9,-19],[2.9,-19],[-2.9,-13],[2.9,-13],[-2.9,13],[2.9,13],[-2.9,19],[2.9,19]];
+const A_ring  = [[-5.45,-19],[5.45,-19],[-15.4,-13],[15.4,-13],[-15.4,13],[15.4,13],[-5.45,19],[5.45,19]];
+
+/* Each button has its own dot figure per state, its own hover padding and its own measured timings.
+   Dots are numbered: 0-3 top row of the idle grid, 4-7 bottom row (the same dot travels between states).
+   Per state: fill right edge, height, centre y, dot positions (design px, x from the icon's left edge, y from the label centre line). */
+const CFG = {
+  AUTHORIZE: { padRight: 23, hoverL: -20.5, out: 150,
+    idle:  { d: offs(19.25, grid) },
+    near:  { R: 38, h: 41, cy: 0, d: offs(19, A_near) },
+    armed: { R: 39, h: 67.5, cy: -1, d: offs(19.5, A_armed) },
+    hover: { h: 66.5, cy: -1, d: offs(13.9, A_ring) } },
+  DOWNLOAD: { padRight: 19.8, hoverL: -20, out: 100,
+    idle:  { d: css([[21.0,-6],[32.9,-6],[44.9,-6],[57.0,-6],[21.0,6],[32.9,6],[44.9,6],[57.0,6]]) },
+    near:  { R: 38.5, h: 33.5, cy: 0, d: css([[21.3,-8.0],[32.8,-7.9],[45.0,-8.0],[57.1,-3.9],[21.2,3.5],[32.7,8.0],[45.0,7.9],[57.0,8.0]]) },
+    armed: { R: 39, h: 66.5, cy: -1, d: css([[21.0,-25.9],[32.5,-26.0],[44.5,-26.0],[56.5,13.0],[21.0,-14.2],[32.4,25.2],[44.4,25.4],[56.8,25.2]]) },
+    hover: { h: 66.5, cy: -1, d: css([[2.6,-26.1],[42.5,-26.0],[54.1,-25.9],[54.6,13.9],[2.5,-14.4],[2.8,25.8],[15.0,25.8],[54.5,25.9]]) } },
+  PUBLISH: { padRight: 21.7, hoverL: -20, out: 100,
+    idle:  { d: css([[20.5,-6.1],[32.3,-6.1],[43.9,-6.1],[55.6,-6.1],[20.5,6.1],[32.3,6.1],[43.9,6.1],[55.6,6.1]]) },
+    near:  { R: 38.5, h: 34, cy: 0, d: css([[20.6,-8.1],[32.5,-7.1],[44.6,-6.8],[56.3,-8.0],[20.5,8.0],[33.1,7.2],[44.5,6.6],[56.2,8.0]]) },
+    armed: { R: 39, h: 67, cy: -1, d: css([[20.5,-26.0],[32.3,-16.0],[44.8,-16.2],[55.7,-26.1],[20.5,25.7],[32.5,15.8],[44.6,15.7],[55.6,25.6]]) },
+    hover: { h: 67, cy: -1, d: css([[-4.0,-32.2],[7.0,-22.0],[44.4,-22.1],[56.0,-32.1],[-3.6,29.7],[7.0,19.7],[44.4,19.8],[56.0,29.5]]) } },
+};
+const ICON_W = 38.5;
+
+const out3 = u => 1 - Math.pow(1 - u, 3);
+const measured = arr => u => {                         /* linear interpolation of a measured per-frame array */
+  if (u <= 0) return 0; if (u >= 1) return 1;
+  const x = u * (arr.length - 1), i = Math.floor(x);
+  return arr[i] + (arr[i + 1] - arr[i]) * (x - i);
+};
+const snap = ms => ({ shape: [0, ms, out3], dots: [0, ms, out3], R: [0, ms, out3], L: [0, ms, out3] });
+function plan(name, from, to) {
+  const cv = CURVES[name], k = from + '>' + to;
+  if (k === 'armed>hover') return { shape: [0, 40, out3], dots: [30, 140, out3],
+    R: [0, cv.dur.in * 1000, measured(cv.Rin)], L: [0, cv.dur.in * 1000, measured(cv.Lin)] };
+  if (k === 'hover>armed') return { shape: [0, 60, out3], dots: [0, 110, out3],
+    R: [0, cv.dur.out * 1000, measured(cv.Rout)], L: [0, cv.dur.out * 1000, measured(cv.Lout)] };
+  if (k === 'idle>near') return snap(30);
+  if (k === 'idle>armed' || k === 'near>armed') return snap(100);           /* measured: the column grows in ~100 ms */
+  if (k === 'armed>idle' || k === 'armed>near') return snap(CFG[name].out);
+  if (k === 'near>idle') return snap(100);
+  return snap(90);
+}
+const ORDER = ['idle', 'near', 'armed', 'hover'];
+
+class VBtn {
+  constructor(el) {
+    this.el = el; this.name = el.dataset.label; el.setAttribute('aria-label', this.name);
+    el.innerHTML = '<span class="o"><span class="fill"></span><span class="label"></span><span class="label on" aria-hidden="true"></span>' +
+      '<span class="focus"></span>' + Array.from({ length: 8 }, () => '<i class="dot"></i>').join('') + '</span>';
+    this.o = el.querySelector('.o'); this.fill = el.querySelector('.fill'); this.focusEl = el.querySelector('.focus');
+    this.labels = [...el.querySelectorAll('.label')]; this.labels.forEach(l => l.textContent = this.name);
+    this.dots = [...el.querySelectorAll('.dot')];
+    this.state = 'idle'; this.want = 'idle'; this.tw = null; this.spin = 0; this.pressed = false; this.focused = false;
+    this.measure(); this.cur = this.vals('idle'); this.render();
+  }
+  measure() {
+    const w = this.labels[0].getBoundingClientRect().width / (window.__scale || 1);
+    this.textRight = LABEL_X + w;
+    this.el.style.width = this.textRight + 'px';
+    const c = CFG[this.name];
+    this.P = {
+      idle:  { L: 0, R: ICON_W, h: 29, cy: 0, d: c.idle.d },
+      near:  { L: 0, R: c.near.R, h: c.near.h, cy: c.near.cy, d: c.near.d },
+      armed: { L: 0, R: c.armed.R, h: c.armed.h, cy: c.armed.cy, d: c.armed.d },
+      hover: { L: c.hoverL, R: this.textRight + c.padRight, h: c.hover.h, cy: c.hover.cy, d: c.hover.d },
+    };
+    if (this.cur && !this.tw) this.cur = this.vals(this.state);
+  }
+  vals(n) { const p = this.P[n]; return { L: p.L, R: p.R, h: p.h, cy: p.cy, d: p.d.map(a => a.slice()) }; }
+  go(to) {
+    const c = this.cur;
+    this.tw = { from: { L: c.L, R: c.R, h: c.h, cy: c.cy, d: c.d.map(a => a.slice()) }, to: this.vals(to),
+                pl: plan(this.name, this.state, to), t0: performance.now() };
+    this.state = to;
+  }
+  step(now) {
+    if (!this.tw) return;
+    const { from, to, pl, t0 } = this.tw;
+    const g = k => { const [dl, du, ez] = pl[k]; return ez(Math.min(1, Math.max(0, (now - t0 - dl) / du))); };
+    const sh = g('shape'), dt = g('dots'), c = this.cur;
+    c.R = from.R + (to.R - from.R) * g('R'); c.L = from.L + (to.L - from.L) * g('L');
+    c.h = from.h + (to.h - from.h) * sh; c.cy = from.cy + (to.cy - from.cy) * sh;
+    c.d = from.d.map((p, i) => [p[0] + (to.d[i][0] - p[0]) * dt, p[1] + (to.d[i][1] - p[1]) * dt]);
+    if (Object.values(pl).every(([dl, du]) => now - t0 >= dl + du)) { this.cur = this.vals(this.state); this.tw = null; }
+  }
+  render() {
+    const c = this.cur, f = this.fill.style;
+    f.left = c.L + 'px'; f.width = (c.R - c.L) + 'px'; f.top = (c.cy - c.h / 2) + 'px'; f.height = c.h + 'px';
+    /* the light copy of the label is visible only to the left of the fill's right edge */
+    this.labels[1].style.clipPath = `inset(-10px ${Math.min(Math.max(this.textRight - c.R, 0), this.textRight)}px -10px -10px)`;
+    const cs = Math.cos(this.spin), sn = Math.sin(this.spin);       /* click: dots spin about their centroid */
+    const mx = c.d.reduce((t, q) => t + q[0], 0) / 8, my = c.d.reduce((t, q) => t + q[1], 0) / 8;
+    this.dots.forEach((d, i) => {
+      const ox = c.d[i][0] - mx, oy = c.d[i][1] - my;
+      d.style.left = (mx + ox * cs - oy * sn) + 'px'; d.style.top = (my + ox * sn + oy * cs) + 'px';
+    });
+    const k = this.focusEl.style; k.left = (c.L - 5) + 'px'; k.top = (c.cy - c.h / 2 - 5) + 'px';
+    k.width = (c.R - c.L + 10) + 'px'; k.height = (c.h + 10) + 'px';
+    this.el.style.transform = this.pressed ? 'scale(.97)' : 'none';
+    this.el.style.transformOrigin = `${(c.L + c.R) / 2}px 33.5px`;
+  }
+  /* distances (design px) from a viewport point to the hover-size box: [plain, padded]. Measured on the source video the
+     hover also fires when the pointer is ~28 px beside / ~10 px above-below the filled box, so hover uses the padded one. */
+  dist(px, py) {
+    const r = this.el.getBoundingClientRect(), s = window.__scale || 1, P = this.P.hover;
+    const x = (px - r.left) / s, y = (py - r.top) / s - 33.5;
+    const f = (mx, my) => Math.hypot(Math.max(P.L - mx - x, 0, x - (P.R + mx)), Math.max(P.cy - P.h / 2 - my - y, 0, y - (P.cy + P.h / 2 + my)));
+    return [f(0, 0), f(HIT_MX, HIT_MY)];
+  }
+  zone([d, dp]) {                                     /* with hysteresis, using the current want */
+    const w = this.want;
+    if (dp <= (w === 'hover' ? 4 : 0)) return 'hover';
+    if (d <= (w === 'armed' || w === 'hover' ? 90 : 80)) return 'armed';
+    if (d <= (w === 'near' || w === 'armed' || w === 'hover' ? 160 : 150)) return 'near';
+    return 'idle';
+  }
+  nextStep() {                                         /* one step towards want through adjacent poses */
+    const i = ORDER.indexOf(this.state), j = ORDER.indexOf(this.want);
+    if (i === j) return this.state;
+    if (this.state === 'hover') return 'armed';        /* retract first (measured 417 ms), then shrink */
+    if (this.want === 'hover' && this.state !== 'armed') return 'armed';
+    return this.want;
+  }
+  /* a running tween may be reversed only when the pointer changes its mind about hover */
+  canRetarget() { return !this.tw || (this.state === 'hover' && this.want !== 'hover') || (this.state === 'armed' && this.want === 'hover'); }
+}
+
+const stage = document.getElementById('stage');
+const ZOOM = parseFloat(new URLSearchParams(location.search).get('zoom') || '0');   /* debug: ?zoom=4 magnifies around the first button */
+function fit() {
+  const s = window.__scale = Math.min(innerWidth / 1920, innerHeight / 1054) * (ZOOM || 1);
+  const cx = ZOOM ? parseFloat(new URLSearchParams(location.search).get('cx') || '530') : 960, cy = 527;                                    /* stage point kept at the window centre */
+  stage.style.transform = ZOOM
+    ? `translate(${innerWidth / 2 - cx * s}px, ${innerHeight / 2 - cy * s}px) scale(${s})`
+    : `translate(${(innerWidth - 1920 * s) / 2}px, ${(innerHeight - 1054 * s) / 2}px) scale(${s})`;
+}
+fit();
+const btns = [...document.querySelectorAll('.vbtn')].map(el => new VBtn(el));
+const relayout = () => { fit(); btns.forEach(b => b.measure()); };
+addEventListener('resize', relayout);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(relayout);
+
+let pointer = null, touchTimer;
+addEventListener('pointermove', e => { pointer = { x: e.clientX, y: e.clientY }; });
+addEventListener('pointerdown', e => { pointer = { x: e.clientX, y: e.clientY }; });
+addEventListener('pointerup', e => { if (e.pointerType === 'touch') { clearTimeout(touchTimer); touchTimer = setTimeout(() => { pointer = null; }, 450); } });
+document.documentElement.addEventListener('mouseleave', () => { pointer = null; });
+const forced = new URLSearchParams(location.search).get('state');      /* ?state=hover|armed|near|idle freezes a pose */
+
+function frame(now) {
+  for (const b of btns) {
+    if (forced) b.want = forced;
+    else if (b.focused) b.want = 'hover';
+    else b.want = pointer ? b.zone(b.dist(pointer.x, pointer.y)) : 'idle';
+    if (b.canRetarget()) { const nx = b.nextStep(); if (nx !== b.state) b.go(nx); }
+    b.step(now); b.render();
+  }
+  requestAnimationFrame(frame);
+}
+
+const toast = document.getElementById('toast'); let tt;
+btns.forEach(b => {
+  const rel = () => { b.pressed = false; };
+  b.el.addEventListener('pointerdown', () => { b.pressed = true; });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => b.el.addEventListener(t, rel));
+  b.el.addEventListener('focus', () => { b.focused = b.el.matches(':focus-visible'); });
+  b.el.addEventListener('blur', () => { b.focused = false; });
+  b.el.addEventListener('click', () => {
+    const t0 = performance.now();                       /* click feedback: the dot ring spins once */
+    (function spin(now) {
+      const u = Math.min(1, (now - t0) / 700); b.spin = out3(u) * Math.PI * 2;
+      if (u < 1) requestAnimationFrame(spin); else b.spin = 0;
+    })(t0);
+    b.el.dispatchEvent(new CustomEvent('vbtn-click', { bubbles: true, detail: { label: b.name } }));
+    toast.textContent = b.name + ' clicked'; toast.classList.add('show'); clearTimeout(tt);
+    tt = setTimeout(() => toast.classList.remove('show'), 1200);
+  });
+});
+requestAnimationFrame(frame);
+window.VBTN = { btns, CURVES };   /* e.g. document.addEventListener('vbtn-click', e => console.log(e.detail.label)) */
+</script>
+</body>
+</html>

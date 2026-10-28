@@ -1,0 +1,5 @@
+video: 4.gif | 4.200s | 1110x1146 | 10.000 fps CFR (dt 100.0-100.0 ms) | 42 frames | audio: none
+scenes: 1 | no cuts
+activity (top): 0.00-4.10s | 1 segments
+motion: 1 object-motion segments
+audio: no audio stream
